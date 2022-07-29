@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 )
@@ -109,11 +111,58 @@ func (ws *WalletServer) CreateTransaction(w http.ResponseWriter, req *http.Reque
 		log.Println("ERROR: Invalid HTTP Method")
 	}
 }
+func (ws *WalletServer) WalletAmount(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		blockchainAddress := req.URL.Query().Get("blockchain_address")
+		endpoint := fmt.Sprintf("%s/amount", ws.Gateway())
+
+		client := &http.Client{}
+		bcsReq, _ := http.NewRequest("GET", endpoint, nil)
+		q := bcsReq.URL.Query()
+		q.Add("blockchain_address", blockchainAddress)
+		bcsReq.URL.RawQuery = q.Encode()
+
+		bcsResp, err := client.Do(bcsReq)
+		if err != nil {
+			log.Printf("ERROR: %v", err)
+			io.WriteString(w, string(utils.JsonStatus("fail")))
+			return
+		}
+
+		w.Header().Add("Content-Type", "application/json")
+		if bcsResp.StatusCode == 200 {
+			decoder := json.NewDecoder(bcsResp.Body)
+			var bar block.AmountResponse
+			err := decoder.Decode(&bar)
+			if err != nil {
+				log.Printf("ERROR: %v", err)
+				io.WriteString(w, string(utils.JsonStatus("fail")))
+				return
+			}
+
+			m, _ := json.Marshal(struct {
+				Message string  `json:"message"`
+				Amount  float32 `json:"amount"`
+			}{
+				Message: "success",
+				Amount:  bar.Amount,
+			})
+			io.WriteString(w, string(m[:]))
+		} else {
+			io.WriteString(w, string(utils.JsonStatus("fail")))
+		}
+	default:
+		log.Printf("ERROR: Invalid HTTP Method")
+		w.WriteHeader(http.StatusBadRequest)
+	}
+}
 
 func (ws *WalletServer) Run() {
 	http.HandleFunc("/", ws.Index)
 	http.HandleFunc("/wallet", ws.Wallet)
 	http.HandleFunc("/transaction", ws.CreateTransaction)
+	http.HandleFunc("/wallet/amount", ws.WalletAmount)
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+strconv.Itoa(int(ws.Port())), nil))
 }
 func init() {
@@ -121,8 +170,10 @@ func init() {
 }
 
 func main() {
-	port := flag.Uint("port", 8080, "TCP Port Number for Wallet Server")
-	gateway := flag.String("gateway", "http://127.0.0.1:5000", "Blockchain Gateway")
+	str := os.Getenv("port")
+	num, _ := strconv.ParseUint(str, 0, 16)
+	port := flag.Uint("port", uint(num), "TCP Port Number for Wallet Server")
+	gateway := flag.String("gateway", os.Getenv("gateway"), "Blockchain Gateway")
 	flag.Parse()
 
 	app := NewWalletServer(uint16(*port), *gateway)
